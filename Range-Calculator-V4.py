@@ -8,10 +8,12 @@ import ipaddress
 import requests
 
 DerakCDNIPv4RangesURL = "https://api.derak.cloud/public/ipv4"
-ArvanCloudIPv4RangesURL = "https://www.arvancloud.ir/en/ips.txt"
+DerakCDNIPv6RangesURL = "https://api.derak.cloud/public/ipv6"
+ArvanCloudIPRangesURL = "https://www.arvancloud.ir/en/ips.txt"
 
 DerakIPv4Ranges = requests.get( DerakCDNIPv4RangesURL ).text.split( "\n" )
-ArvanIPv4Ranges = requests.get( ArvanCloudIPv4RangesURL ).text.split( "\n" )
+DerakIPv6Ranges = requests.get( DerakCDNIPv6RangesURL ).text.split( "\n" )
+ArvanIPRanges = requests.get( ArvanCloudIPRangesURL ).text.split( "\n" )
 
 CurrentDirectoryFiles = os.listdir()
 
@@ -25,19 +27,18 @@ if DBIPCSVFileName == "" :
     print()
     sys.exit( " DB IP CSV File Not Found ! \n" )
 
-OVPNClientConfigFileName = ""
+OVPNClientConfigFilesNames = []
 
 for FileName in CurrentDirectoryFiles :
     if FileName.endswith( ".ovpn" ):
-        OVPNClientConfigFileName = FileName
+        OVPNClientConfigFilesNames.append( FileName )
 
-if OVPNClientConfigFileName == "" :
+if len( OVPNClientConfigFilesNames ) < 1 :
     print()
-    sys.exit( " OpenVPN Client Config File Not Found ! \n" )
-
+    sys.exit( " OpenVPN Client Config File(s) Not Found ! \n" )
+    
 IPv4ExcludedRanges = []
 IPv6ExcludedRanges = []
-IPv6RemainingSeqs = []
 
 IPv4Seqs = []
 IPv6Seqs = []
@@ -389,15 +390,41 @@ for DerakIPv4Range in DerakIPv4Ranges :
     if AlreadyExcluded == False :
         IPv4ExcludedRanges.append( DerakIPv4Range )
 
-for ArvanIPv4Range in ArvanIPv4Ranges :
+for ArvanIPRange in ArvanIPRanges :
+    if ":" not in ArvanIPRange :
+        AlreadyExcluded = False
+        for IPv4ExcludedRange in IPv4ExcludedRanges :
+            ExcludedRange = ipaddress.ip_network( IPv4ExcludedRange )
+            ArvanRange = ipaddress.ip_network( ArvanIPRange )
+            if IPv4ExcludedRange == ArvanIPRange or ArvanRange.subnet_of( ExcludedRange ) :
+                AlreadyExcluded = True
+        if AlreadyExcluded == False :
+            IPv4ExcludedRanges.append( ArvanIPRange )
+    else :
+        AlreadyExcluded = False
+        for IPv6ExcludedRange in IPv6ExcludedRanges :
+            ExcludedRange = ipaddress.ip_network( IPv6ExcludedRange )
+            ArvanRange = ipaddress.ip_network( ArvanRange )
+            if IPv6ExcludedRange == ArvanRange or ArvanRange.subnet_of( ExcludedRange ) :
+                AlreadyExcluded = True
+        if AlreadyExcluded == False :
+            IPv6ExcludedRanges.append( ArvanRange )
+
+for DerakIPv6Range in DerakIPv6Ranges :
     AlreadyExcluded = False
-    for IPv4ExcludedRange in IPv4ExcludedRanges :
-        ExcludedRange = ipaddress.ip_network( IPv4ExcludedRange )
-        ArvanRange = ipaddress.ip_network( ArvanIPv4Range )
-        if IPv4ExcludedRange == ArvanIPv4Range or ArvanRange.subnet_of( ExcludedRange ) :
+    for IPv6ExcludedRange in IPv6ExcludedRanges :
+        ExcludedRange = ipaddress.ip_network( IPv6ExcludedRange )
+        DerakRange = ipaddress.ip_network( DerakIPv6Range )
+        if IPv6ExcludedRange == DerakIPv6Range or DerakRange.subnet_of( ExcludedRange ) :
             AlreadyExcluded = True
     if AlreadyExcluded == False :
-        IPv4ExcludedRanges.append( ArvanIPv4Range )
+        IPv6ExcludedRanges.append( DerakIPv6Range )
+
+IPv6ExcludedRangesCompressed = []
+for IPv6ExcludedRange in IPv6ExcludedRanges :
+    IPv6ExcludedRangesCompressed.append( ipaddress.ip_network( IPv6ExcludedRange ).compressed )
+
+IPv6ExcludedRanges = IPv6ExcludedRangesCompressed
 
 def ReturnCIDR( ExcludedRange ) :
     ExcludedRangeCIDR = int( ( ExcludedRange.split( "/" ) )[ 1 ] )
@@ -431,16 +458,22 @@ for IPv4ExcludedRange in IPv4ExcludedRanges :
         NetMaskString.append( str( IntByte ) )
     IPv4ExcludedRangesMask.append( ".".join( NetMaskString ) )
 
-OVPNClientConfigFileObj = open( OVPNClientConfigFileName ,"a+" )
+OVPNClientConfigFilesObjs = []
+for OVPNClientConfigFileName in OVPNClientConfigFilesNames :
+    OVPNClientConfigFileObj = open( OVPNClientConfigFileName ,"a+" )
+    OVPNClientConfigFilesObjs.append( OVPNClientConfigFileObj )
 
-VPNExcludedRangesRSCFileObj = open( "Mikrotik-VPN-Excluded-Ranges-" + DBIPCSVFileName[ -9 : -4 ] + ".rsc" ,"w+" )
+for OVPNClientConfigFileObj in OVPNClientConfigFilesObjs :
+    IPv4ExcludedRangeIndex = 0
+    for IPv4ExcludedRange in IPv4ExcludedRanges :
+        OVPNClientConfigFileObj.write( "route " + ( IPv4ExcludedRange.split( "/" ) )[ 0 ] + " " + IPv4ExcludedRangesMask[ IPv4ExcludedRangeIndex ] + " net_gateway\n" )
+        IPv4ExcludedRangeIndex = IPv4ExcludedRangeIndex + 1
+    for IPv6ExcludedRange in IPv6ExcludedRanges :
+        OVPNClientConfigFileObj.write( "route-ipv6 " + IPv6ExcludedRange + " net_gateway \n" )
+    OVPNClientConfigFileObj.close()
 
-IPv4ExcludedRangeIndex = 0
-for IPv4ExcludedRange in IPv4ExcludedRanges :
-    OVPNClientConfigFileObj.write( "route " + ( IPv4ExcludedRange.split( "/" ) )[ 0 ] + " " + IPv4ExcludedRangesMask[ IPv4ExcludedRangeIndex ] + " net_gateway \n" )
-    IPv4ExcludedRangeIndex = IPv4ExcludedRangeIndex + 1
 
-OVPNClientConfigFileObj.write( "route-ipv6 " + "::/0" + " \n" )
+VPNExcludedRangesRSCFileObj = open( "VPN-Ranges-" + DBIPCSVFileName[ -9 : -4 ] + ".rsc" ,"w+" )
 
 for IPv4ExcludedRange in IPv4ExcludedRanges :
     VPNExcludedRangesRSCFileObj.write( "/ip firewall address-list add address=" + IPv4ExcludedRange + " list=VPN-Excluded-Ranges" + "\n" )
@@ -448,9 +481,4 @@ for IPv4ExcludedRange in IPv4ExcludedRanges :
 for IPv6ExcludedRange in IPv6ExcludedRanges :
     VPNExcludedRangesRSCFileObj.write( "/ipv6 firewall address-list add address=" + IPv6ExcludedRange + " list=VPN-Excluded-Ranges" + "\n" )
 
-
-# route 192.168.1.0 255.255.255.0 net_gateway
-# route-ipv6 ::/0
-
-OVPNClientConfigFileObj.close()
 VPNExcludedRangesRSCFileObj.close()
